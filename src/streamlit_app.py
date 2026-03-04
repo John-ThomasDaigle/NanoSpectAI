@@ -58,8 +58,6 @@ if building_photo:
 
 st.divider()
 
-
-# Generate Section
 # Generate Section
 st.header("Generate Report")
 
@@ -109,21 +107,9 @@ if "final_pdf" in st.session_state:
         )
 
 
-# Download Section 
 
-if st.button("Generate Inspection Report"):
 
-    #with st.spinner("Generating report..."):
-    print(generate_inspection_report)
-    final_pdf = generate_inspection_report(
-    input_docx_path=temp_doc_path,
-    building_type=building_style,
-    building_name=address,
-    inspection_date="N/A",
-    building_image_path=temp_photo_path
-)
 
-    st.success("Report Generated Successfully!")
 
     # Store in session state
     st.session_state["final_pdf"] = final_pdf
