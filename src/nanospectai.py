@@ -1,0 +1,761 @@
+import json
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Callable, Optional
+from PIL import Image as PILImage
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    PageTemplate,
+    Paragraph,
+    Spacer,
+    PageBreak,
+    Image as RLImage,
+    Table,
+    TableStyle,
+    KeepTogether,
+    Flowable,
+)
+from reportlab.platypus.tableofcontents import TableOfContents
+from docx import Document as DocxDocument
+from docx.shared import Inches
+from docx.oxml.ns import qn
+import google.generativeai as genai
+try:
+    from pypdf import PdfReader, PdfWriter
+except ImportError:
+    from PyPDF2 import PdfReader, PdfWriter
+try:
+    from docx2pdf import convert as docx2pdf_convert
+    DOCX2PDF_AVAILABLE = True
+except Exception:
+    DOCX2PDF_AVAILABLE = False
+
+#Config
+MODEL_NAME = "gemini-2.5-pro"
+IMAGE_TEMP_DIR_NAME = "extracted_images"
+OUTPUT_DOCX = "inspection_output.docx"
+OUTPUT_PDF = "inspection_output.pdf"
+FINAL_PDF = "final_report.pdf"
+# Minimum size to accept an image as a real inspection photo (filters logos/icons)
+MIN_IMAGE_WIDTH_PX = 100
+MIN_IMAGE_HEIGHT_PX = 100
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
+logger = logging.getLogger(__name__)
+
+# Severity badge colours
+SEVERITY_COLORS = {
+    "Significant": colors.HexColor("#C0392B"),
+    "Marginal": colors.HexColor("#E67E22"),
+    "Minor": colors.HexColor("#2980B9"),
+}
+SEVERITY_LABELS = {
+    "Significant": "Significant Defect",
+    "Marginal": "Marginal Defect",
+    "Minor": "Minor Defect / FYI",
+}
+
+# A pill shaped badge drawn directly on the canvas
+class PillBadge(Flowable):
+    FONT = "Helvetica-Bold"
+    FONT_SIZE = 8
+    PAD_X = 8  # horizontal padding inside pill
+    PAD_Y = 4  # vertical padding inside pill
+    RADIUS = 6  # corner radius
+
+    def __init__(self, label: str, bg_color):
+        super().__init__()
+        self.label    = label
+        self.bg_color = bg_color
+        # Fixed dimensions calculated from font metrics
+        self._w = pdfmetrics.stringWidth(label, self.FONT, self.FONT_SIZE) + 2 * self.PAD_X
+        self._h = self.FONT_SIZE + 2 * self.PAD_Y
+
+    def wrap(self, available_width, available_height):
+        return self._w, self._h
+
+    def draw(self):
+        c = self.canv
+        c.saveState()
+        # Pill background
+        c.setFillColor(self.bg_color)
+        c.roundRect(0, 0, self._w, self._h, self.RADIUS, stroke=0, fill=1)
+        # White label centred in the pill
+        c.setFillColor(colors.white)
+        c.setFont(self.FONT, self.FONT_SIZE)
+        c.drawCentredString(self._w / 2, self.PAD_Y + 1, self.label)
+        c.restoreState()
+
+
+# Gemini Setup
+def _get_model() -> genai.GenerativeModel:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set. Export it as an environment variable.")
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(MODEL_NAME)
+
+
+# PDF template with header/footer and TOC support
+class InspectionDocTemplate(BaseDocTemplate):
+    def __init__(self, filename: str, **kwargs):
+        super().__init__(filename, **kwargs)
+        frame = Frame(
+            self.leftMargin, self.bottomMargin,
+            self.width, self.height,
+            id="normal",
+        )
+        self.addPageTemplates([
+            PageTemplate(
+                id="inspection_template",
+                frames=[frame],
+                onPage=self._draw_header_footer,
+            )
+        ])
+
+    def _draw_header_footer(self, canv, doc):
+        canv.saveState()
+        page_num = canv.getPageNumber()
+
+        if page_num > 1:
+            # Header
+            canv.setFont("Helvetica-Bold", 10)
+            canv.setFillColor(colors.darkblue)
+            canv.drawString(doc.leftMargin, letter[1] - 0.52 * inch,
+                            "NanoSpect AI Inspection Report")
+            canv.setFont("Helvetica", 9)
+            canv.setFillColor(colors.grey)
+            canv.drawRightString(letter[0] - doc.rightMargin, letter[1] - 0.52 * inch,
+                                 f"Page {page_num}")
+            canv.setStrokeColor(colors.lightgrey)
+            canv.setLineWidth(0.5)
+            canv.line(doc.leftMargin, letter[1] - 0.62 * inch,
+                      letter[0] - doc.rightMargin, letter[1] - 0.62 * inch)
+
+            # Footer
+            canv.line(doc.leftMargin, 0.52 * inch,
+                      letter[0] - doc.rightMargin, 0.52 * inch)
+            canv.setFont("Helvetica", 8)
+            canv.setFillColor(colors.grey)
+            canv.drawString(doc.leftMargin, 0.38 * inch, "Generated by NanoSpect AI")
+
+        canv.restoreState()
+
+    def afterFlowable(self, flowable):
+        """Register TOC entries for top-level Heading1/Heading2 Paragraphs.
+        Each finding has a zero-height invisible Paragraph (style name "Heading2")
+        added directly to the story so afterFlowable sees it without any
+        container recursion.  The visual title lives inside a KeepTogether
+        under style "Heading2Visual" and is intentionally ignored here to
+        prevent duplicate TOC entries.
+        """
+        if not isinstance(flowable, Paragraph):
+            return
+        text = flowable.getPlainText().strip()
+        if not text:
+            return
+        style = flowable.style.name
+        if style == "Heading1":
+            key = f"h1-{self.seq.nextf('heading1')}"
+            self.canv.bookmarkPage(key)
+            self.notify("TOCEntry", (0, text, self.page, key))
+        elif style == "Heading2":
+            key = f"h2-{self.seq.nextf('heading2')}"
+            self.canv.bookmarkPage(key)
+            self.notify("TOCEntry", (1, text, self.page, key))
+
+
+#Cover page drawn with Canvas
+def create_cover(
+    output_path: str,
+    building_type: str,
+    building_name: str,
+    inspection_date: str,
+    building_image_path: Optional[str],
+    inspectors: list,
+    logo_path: Optional[str],
+) -> None:
+    c = canvas.Canvas(output_path, pagesize=letter)
+    width, height = letter
+    margin = 0.75 * inch
+
+    #Logo (top left)
+    if logo_path and os.path.exists(logo_path):
+        logo_w, logo_h = 1.3 * inch, 1.1 * inch
+        c.drawImage(logo_path, margin, height - margin - logo_h,
+                    width=logo_w, height=logo_h, preserveAspectRatio=True, mask="auto")
+
+    # Company info (top right)
+    x_text = width - margin - 0.25 * inch
+    y = height - margin - 0.2 * inch
+    c.setFont("Helvetica-Bold", 14)
+    c.drawRightString(x_text, y, "NANOSPECT AI")
+    y -= 14
+    c.drawRightString(x_text, y, "INSPECTIONS")
+    c.setFont("Helvetica", 10)
+    y -= 16
+    c.drawRightString(x_text, y, "(870) 235-4000")
+    y -= 12
+    c.drawRightString(x_text, y, "Southern Arkansas University")
+
+    # Building photo centered
+    y_img = height - 2.8 * inch - 2.5 * inch
+    if building_image_path and os.path.exists(building_image_path):
+        photo_w, photo_h = 4.5 * inch, 2.5 * inch
+        x = (width - photo_w) / 2
+        c.drawImage(building_image_path, x, y_img,
+                    width=photo_w, height=photo_h,
+                    preserveAspectRatio=True, mask="auto")
+
+    #Report title block
+    y_text = y_img - 24
+    c.setFont("Helvetica", 16)
+    c.drawCentredString(width / 2, y_text, f"NANOSPECT AI — {building_type.upper()} INSPECTION")
+    y_text -= 18
+    c.setFont("Helvetica", 12)
+    c.drawCentredString(width / 2, y_text, building_name)
+    y_text -= 14
+    c.drawCentredString(width / 2, y_text, inspection_date)
+ # Divider line
+    y_top = 3.5 * inch
+    c.setLineWidth(0.5)
+    c.line(margin, y_top, width - margin, y_top)
+
+    #Inspector panel
+    if inspectors:
+        panel_top = 3.2 * inch
+        c.setFont("Helvetica-Bold", 12)
+        headshot = 1.5 * inch
+        num = len(inspectors)
+        usable_width = width - 2 * margin
+        gap = (usable_width - num * headshot) / (num + 1)
+        for i, inspector in enumerate(inspectors):
+            x = margin + gap + i * (headshot + gap)
+            y_image = panel_top - 0.4 * inch - headshot
+            if inspector.get("image") and os.path.exists(inspector["image"]):
+                c.drawImage(inspector["image"], x, y_image,
+                            width=headshot, height=headshot, mask="auto")
+            cx = x + headshot / 2
+            y_label = y_image - 14
+            c.setFont("Helvetica-Bold", 10)
+            c.drawCentredString(cx, y_label, inspector.get("name", ""))
+            y_label -= 12
+            c.setFont("Helvetica", 9)
+            c.drawCentredString(cx, y_label, "Building Inspector")
+            y_label -= 12
+            c.setFont("Helvetica", 8)
+            c.drawCentredString(cx, y_label, inspector.get("email", ""))
+    c.showPage()
+    c.save()
+    logger.info("Cover page saved to: %s", output_path)
+
+
+def _iter_document_blocks(document) -> list:
+    """
+    Flatten the document body — paragraphs AND table cells — in reading order.
+    This ensures images embedded inside tables are found.
+    """
+    from docx.text.paragraph import Paragraph as _Para
+    from docx.table import Table as _Table
+    blocks = []
+    para_idx = table_idx = 0
+    for child in document.element.body:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "p":
+            blocks.append({"element": _Para(child, document), "source": f"para[{para_idx}]"})
+            para_idx += 1
+        elif tag == "tbl":
+            table = _Table(child, document)
+            for r_i, row in enumerate(table.rows):
+                for c_i, cell in enumerate(row.cells):
+                    for cell_para in cell.paragraphs:
+                        blocks.append({
+                            "element": cell_para,
+                            "source": f"table[{table_idx}] row[{r_i}] col[{c_i}]",
+                        })
+            table_idx += 1
+    return blocks
+
+def _collect_context(blocks: list, image_block_idx: int, window: int = 5) -> str:
+    """
+    Gather inspector notes near an image block. Looks up to `window` blocks in
+    both directions; stops at another image. Caption-styled paragraphs take priority.
+    """
+    notes, captions = [], []
+    for j in range(image_block_idx - 1, max(-1, image_block_idx - window - 1), -1):
+        para = blocks[j]["element"]
+        text = (para.text or "").strip()
+        if not text:
+            continue
+        if para._element.xpath(".//a:blip"):
+            break
+        style_name = (para.style.name or "").lower() if para.style else ""
+        (captions if "caption" in style_name else notes).insert(0, text)
+
+    for j in range(image_block_idx + 1, min(len(blocks), image_block_idx + window + 1)):
+        para = blocks[j]["element"]
+        text = (para.text or "").strip()
+        if not text:
+            continue
+        if para._element.xpath(".//a:blip"):
+            break
+        style_name = (para.style.name or "").lower() if para.style else ""
+        (captions if "caption" in style_name else notes).append(text)
+
+    combined = captions if captions else notes
+    return " | ".join(combined) if combined else ""
+
+
+def _save_image(image_part, image_temp_dir: str, counter: int) -> Optional[tuple]:
+    """Write image to disk and filter out icons/logos by minimum pixel size."""
+    ext = Path(str(image_part.partname)).suffix.lower() or ".jpeg"
+    image_name = f"image_{counter:03d}{ext}"
+    image_path = os.path.join(image_temp_dir, image_name)
+    Path(image_path).write_bytes(image_part.blob)
+
+    try:
+        with PILImage.open(image_path) as img:
+            w, h = img.size
+            if w < MIN_IMAGE_WIDTH_PX or h < MIN_IMAGE_HEIGHT_PX:
+                logger.debug("Skipping %s — too small (%dx%d px)", image_name, w, h)
+                Path(image_path).unlink(missing_ok=True)
+                return None
+    except Exception as e:
+        logger.warning("Could not validate %s: %s — skipping.", image_name, e)
+        Path(image_path).unlink(missing_ok=True)
+        return None
+
+    return image_path, image_name
+
+def extract_image_caption_pairs(doc_path: str, image_temp_dir: str) -> list:
+    """
+    Extract all inspection photos from a DOCX, each paired with surrounding
+    inspector notes. Scans paragraphs and table cells, deduplicates by
+    relationship ID, and filters out small images (logos, icons).
+    """
+    doc_path = Path(doc_path)
+    if not doc_path.exists():
+        raise FileNotFoundError(f"Input DOCX not found: {doc_path}")
+
+    os.makedirs(image_temp_dir, exist_ok=True)
+    document = DocxDocument(str(doc_path))
+    blocks = _iter_document_blocks(document)
+    logger.info("Document flattened to %d blocks", len(blocks))
+    pairs = []
+    seen_rids: set = set()
+    
+    image_counter = 0
+    for i, block in enumerate(blocks):
+        para = block["element"]
+        blips = para._element.xpath(".//a:blip")
+        if not blips:
+            continue
+
+        for blip in blips:
+            r_id = blip.get(qn("r:embed"))
+            if not r_id or r_id in seen_rids:
+                continue
+            seen_rids.add(r_id)
+
+            image_part = document.part.related_parts.get(r_id)
+            if image_part is None:
+                logger.warning("rId=%s has no image part — skipping.", r_id)
+                continue
+
+            image_counter += 1
+            result = _save_image(image_part, image_temp_dir, image_counter)
+            if result is None:
+                image_counter -= 1
+                continue
+
+            image_path, image_name = result
+            context = _collect_context(blocks, i)
+            logger.info(
+                "Extracted %s | context: %s", image_name,
+                (context[:80] + "…") if len(context) > 80 else (context or "[none]"),
+            )
+            pairs.append({"image_path": image_path, "image_name": image_name, "context": context})
+
+    logger.info("Extraction complete — %d photo(s) found.", len(pairs))
+    return pairs
+
+
+#AI Generation with single batched call
+def analyze_all_findings(
+    model: genai.GenerativeModel,
+    pairs: list,
+    progress_callback: Optional[Callable] = None,
+) -> list:
+    """
+    Send all images + inspector notes to Gemini in ONE API call.
+    Returns pairs with title, severity, location, description, and recommendation
+    populated on every item. Falls back to safe defaults on any failure.
+    """
+
+    system_block = (
+        "You are a licensed property inspector writing an insurance-reviewable inspection report.\n"
+        f"You will be given {len(pairs)} inspection finding(s). "
+        "Each finding is a label with inspector notes followed immediately by the photo.\n\n"
+        "For EVERY finding produce ALL of the following fields:\n\n"
+        "  TITLE        — 2–5 words in ALL CAPS. Professional inspection terminology. "
+        "Focus on the defect, not the location. No words like 'Figure', 'Image', or 'Photo'.\n\n"
+        "  SEVERITY     — ONE of exactly: 'Significant', 'Marginal', or 'Minor'.\n"
+        "    Significant = not functional, serious safety concern, or major expense.\n"
+        "    Marginal    = safety hazard or functional deficiency; may worsen.\n"
+        "    Minor       = maintenance item, cosmetic observation, or FYI.\n\n"
+        "  LOCATION     — Where in the property (e.g. 'Front Porch', 'Hallway Ceiling'). "
+        "Use the inspector notes. Leave as empty string if unclear.\n\n"
+        "  DESCRIPTION  — A single cohesive paragraph (5–8 sentences) covering: "
+        "observable condition, probable cause, and implications if left unaddressed. "
+        "Do NOT include corrective action here.\n\n"
+        "Rules:\n"
+        "- Third-person, objective, professional tone.\n"
+        "- Do NOT mention 'the image', 'the photo', 'the notes', or 'the caption'.\n"
+        "- Do NOT use bullet points — single paragraph descriptions only.\n\n"
+        "OUTPUT FORMAT — respond with ONLY valid JSON, no markdown fences:\n"
+        '{"findings":['
+        '{"index":1,"title":"...","severity":"...","location":"...",'
+        '"description":"...",}'
+        ", ...]}"
+    )
+    content: list = [system_block]
+    opened_images: list = []
+
+    try:
+        for i, item in enumerate(pairs, start=1):
+            notes = (item.get("context") or "").strip() or "No inspector notes provided."
+            content.append(f"--- Finding {i} ---\nInspector Notes: {notes}\nPhoto:")
+            img = PILImage.open(item["image_path"])
+            opened_images.append(img)
+            content.append(img.copy())
+
+        response = model.generate_content(content)
+        raw = (getattr(response, "text", "") or "").strip()
+
+        json_match = re.search(r'\{[\s\S]*\}', raw)
+        if not json_match:
+            raise ValueError(f"No JSON found in Gemini response. Raw:\n{raw[:300]}")
+
+        data = json.loads(json_match.group(0))
+        findings = data.get("findings", [])
+        if not findings:
+            raise ValueError(f"'findings' list is empty. Data: {data}")
+
+        result_map = {f["index"]: f for f in findings}
+        for i, item in enumerate(pairs, start=1):
+            r = result_map.get(i, {})
+            item["title"] = (r.get("title") or "").strip() or "Inspection Finding"
+            item["severity"] = (r.get("severity") or "Minor").strip()
+            item["location"] = (r.get("location") or "").strip()
+            item["description"] = (r.get("description") or "").strip() or "Description unavailable."
+            item["recommendation"] = (r.get("recommendation") or "").strip()
+
+        logger.info("Batch analysis complete — %d/%d findings parsed.", len(findings), len(pairs))
+
+    except Exception as e:
+        logger.error("Batch Gemini call failed: %s", e, exc_info=True)
+        for item in pairs:
+            item.setdefault("title", "Inspection Finding")
+            item.setdefault("severity", "Minor")
+            item.setdefault("location","")
+            item.setdefault("description", "Description could not be generated.")
+            item.setdefault("recommendation", "")
+    finally:
+        for img in opened_images:
+            img.close()
+
+    return pairs
+
+#PDF Report
+def build_output_pdf(
+    pairs: list,
+    output_path: str,
+    building_type: str,
+    building_name: str,
+    inspection_date: str,
+    building_image_path: Optional[str],
+    inspectors: list,
+    logo_path: Optional[str],
+) -> None:
+    
+    doc = InspectionDocTemplate(
+        output_path,
+        pagesize=letter,
+        rightMargin=72,
+        leftMargin=72,
+        topMargin=90,
+        bottomMargin=60,
+    )
+
+    base = getSampleStyleSheet()
+    PAGE_W    = 6.5  * inch
+    COL_TEXT  = 3.65 * inch
+    COL_IMAGE = 2.65 * inch
+
+    # Paragraph styles 
+    heading1 = ParagraphStyle(
+        "Heading1", parent=base["Heading1"],
+        fontSize=16, leading=20, textColor=colors.darkblue, spaceAfter=10,
+    )
+    # Invisible anchor — name MUST be "Heading2" so afterFlowable registers it.
+    # Zero font size and white colour give it no visible footprint.
+    h2_anchor = ParagraphStyle(
+        "Heading2", parent=base["Heading2"],
+        fontSize=0.1, leading=0.1, spaceBefore=0, spaceAfter=0,
+        textColor=colors.white,
+    )
+    # Visual title inside the card — different name so it is never double-registered.
+    h2_visual = ParagraphStyle(
+        "Heading2Visual", parent=base["Heading2"],
+        fontSize=12, leading=15, textColor=colors.black, spaceAfter=4,
+    )
+    location_style = ParagraphStyle(
+        "LocationStyle", parent=base["Normal"],
+        fontSize=9, leading=12, textColor=colors.grey, spaceAfter=6,
+    )
+    body = ParagraphStyle(
+        "BodyCustom", parent=base["BodyText"],
+        fontSize=10, leading=14, spaceAfter=8,
+    )
+    rec_label = ParagraphStyle(
+        "RecLabel", parent=base["Normal"],
+        fontSize=9, leading=12, textColor=colors.grey, spaceAfter=2,
+    )
+    rec_body = ParagraphStyle(
+        "RecBody", parent=base["BodyText"],
+        fontSize=10, leading=13, spaceAfter=10,
+    )
+    # TOC widget
+    toc = TableOfContents()
+    toc.levelStyles = [
+        ParagraphStyle(
+            name="TOCLevel1", fontName="Helvetica-Bold",
+            fontSize=12, leftIndent=20, firstLineIndent=-20,
+            spaceBefore=6, leading=14,
+        ),
+        ParagraphStyle(
+            name="TOCLevel2", fontName="Helvetica",
+            fontSize=10, leftIndent=40, firstLineIndent=-20,
+            spaceBefore=2, leading=12,
+        ),
+    ]
+    toc.dotsMinLevel = 0
+    story = []
+
+    #TOC page 
+    story.append(Paragraph("Table of Contents", base["Title"]))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(toc)
+    story.append(PageBreak())
+
+    # "INSPECTION FINDINGS" dark banner
+    banner_para = Paragraph(\
+        '<font color="white"><b>INSPECTION FINDINGS</b></font>',
+        ParagraphStyle("banner", parent=base["Normal"], fontSize=16, leading=22),
+    )
+
+    banner_tbl = Table([[banner_para]], colWidths=[PAGE_W])
+    banner_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#1B2A4A")),
+        ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+    ]))
+    story.append(banner_tbl)
+    story.append(Spacer(1, 0.2 * inch))
+
+    # One card per finding
+    for idx, item in enumerate(pairs, start=1):
+        severity = item.get("severity", "Minor")
+        badge_color = SEVERITY_COLORS.get(severity, colors.grey)
+        badge_label = SEVERITY_LABELS.get(severity, f"{severity} Defect")
+        title_text = f"Finding {idx}: {item['title']}"
+
+        # Invisible anchor paragraph,  top-level story item so afterFlowable
+        # fires on it directly, registers the TOC entry, and sets the
+        # clickable bookmark
+        story.append(Paragraph(title_text, h2_anchor))
+
+        # Pill shaped severity badge 
+        pill = PillBadge(badge_label, badge_color)
+        pill_col_w = pill._w + 8   # a little breathing room on the right side of the pill
+
+        # Visual header: title + pill badge
+        title_para = Paragraph(title_text, h2_visual)
+        header_tbl = Table(
+            [[title_para, pill]],
+            colWidths=[PAGE_W - pill_col_w, pill_col_w],
+        )
+        header_tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (0, -1),  0),
+            ("RIGHTPADDING", (0, 0), (0, -1),  0),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("ALIGN", (1, 0), (1,  0),  "RIGHT"),
+        ]))
+
+        # Left column: location + description + recommendation
+        left_cells: list = []
+        if item.get("location"):
+            left_cells.append(Paragraph(item["location"], location_style))
+        left_cells.append(Paragraph(item["description"], body))
+        if item.get("recommendation"):
+            left_cells.append(Paragraph("Recommendation", rec_label))
+            left_cells.append(Paragraph(item["recommendation"], rec_body))
+
+        # Right column: photo
+        right_cells: list = []
+        if os.path.exists(item["image_path"]):
+            right_cells.append(
+                RLImage(item["image_path"], width=COL_IMAGE, height=COL_IMAGE * 0.75)
+            )
+
+        body_tbl = Table(
+            [[left_cells, right_cells]],
+            colWidths=[COL_TEXT, COL_IMAGE],
+        )
+        body_tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (0, -1),  0),
+            ("RIGHTPADDING", (0, 0), (0, -1),  8),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+
+        # Divider
+        divider_tbl = Table([[""]], colWidths=[PAGE_W])
+        divider_tbl.setStyle(TableStyle([
+            ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+
+        # Keep together keeps title, image, and text on the same page
+        story.append(KeepTogether([
+            header_tbl,
+            body_tbl,
+            divider_tbl,
+            Spacer(1, 0.22 * inch),
+        ]))
+
+    doc.multiBuild(story)
+    logger.info("Report PDF written to %s", output_path)
+
+# Docx report
+def build_output_docx(pairs: list, output_path: str) -> None:
+    doc = DocxDocument()
+    doc.add_heading("Inspection Findings", level=1)
+
+    for idx, item in enumerate(pairs, start=1):
+        severity = item.get("severity", "Minor")
+        heading_text = f"Finding {idx}: {item['title']}"
+        
+        if severity in ("Significant", "Marginal"):
+            heading_text += f"  [{severity} Defect]"
+        doc.add_heading(heading_text, level=2)
+        
+        if item.get("location"):
+            loc_para = doc.add_paragraph(item["location"])
+            loc_para.runs[0].italic = True
+        
+        if os.path.exists(item["image_path"]):
+            doc.add_picture(item["image_path"], width=Inches(4.5))
+
+        doc.add_paragraph(item["description"])
+
+        if item.get("recommendation"):
+            rec = doc.add_paragraph()
+            rec.add_run("Recommendation: ").bold = True
+            rec.add_run(item["recommendation"])
+
+        doc.add_paragraph()  # blank line between findings
+
+    doc.save(output_path)
+    logger.info("DOCX written to %s", output_path)
+
+# Merge cover + report PDFs into final output
+def merge_pdfs(paths: list, output_path: str) -> None:
+    writer = PdfWriter()
+    for path in paths:
+        reader = PdfReader(path)
+        for page in reader.pages:
+            writer.add_page(page)
+    with open(output_path, "wb") as f:
+        writer.write(f)
+
+# Main
+def generate_inspection_report(
+    input_docx_path: str,
+    building_type: str = "Property",
+    building_name: str = "",
+    inspection_date: str = "",
+    building_image_path: Optional[str] = None,
+    inspectors: Optional[list] = None,
+    logo_path: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    progress_callback: Optional[Callable] = None,
+) -> str:
+
+    building_type = building_type or "Property"
+    inspectors = inspectors or []
+    output_dir = output_dir or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+    image_temp_dir = os.path.join(output_dir, IMAGE_TEMP_DIR_NAME)
+    report_pdf = os.path.join(output_dir, OUTPUT_PDF)
+    cover_pdf  = os.path.join(output_dir, "temp_cover.pdf")
+    final_pdf = os.path.join(output_dir, FINAL_PDF)
+    docx_out = os.path.join(output_dir, OUTPUT_DOCX)
+
+    # Extract images and inspector notes from the DOCX
+    pairs = extract_image_caption_pairs(input_docx_path, image_temp_dir)
+    if not pairs:
+        raise RuntimeError(
+            "No images were found in the uploaded document. "
+            "Please ensure the DOCX contains embedded inspection photos."
+        )
+
+    # Run single batch AI call for all findings
+    model = _get_model()
+    pairs = analyze_all_findings(model, pairs, progress_callback=progress_callback)
+
+    # Build report PDF (TOC + findings)
+    build_output_pdf(
+        pairs=pairs,
+        output_path=report_pdf,
+        building_type=building_type,
+        building_name=building_name,
+        inspection_date=inspection_date,
+        building_image_path=building_image_path,
+        inspectors=inspectors,
+        logo_path=logo_path,
+    )
+
+    # Create cover page as its own PDF
+    create_cover(
+        output_path=cover_pdf,
+        building_type=building_type,
+        building_name=building_name,
+        inspection_date=inspection_date,
+        building_image_path=building_image_path,
+        inspectors=inspectors,
+        logo_path=logo_path,
+    )
+    # Merge cover + report
+    merge_pdfs([cover_pdf, report_pdf], final_pdf)
+
+    # Write DOCX
+    build_output_docx(pairs, docx_out)
+    logger.info("Final PDF : %s", final_pdf)
+    logger.info("DOCX      : %s", docx_out)
+    return final_pdf
