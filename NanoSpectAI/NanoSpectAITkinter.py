@@ -18,9 +18,9 @@ timer_id = None
 def update_timer():
     global seconds, timer_id
     seconds += 1
-    if seconds >= 15:
+    if seconds == 15:
         timeLabel.configure(text = 'Mobile Launched')
-        subprocess.Popen([sys.executable, "Mobile.py"])
+        subprocess.Popen([sys.executable, 'NanoSpectMobile.py'])
     else:
         timeLabel.configure(text = str(seconds))
         timer_id = window.after(1000, update_timer)
@@ -45,13 +45,13 @@ timeLabel.pack(pady = 20)
 nanoSpectAICamera = ttk.Button(window, 
                                text = 'Camera',
                                width = 30,
-                               command =  lambda: stop_timer_and_launch('Camera', 'Camera.py'))
+                               command =  lambda: stop_timer_and_launch('Camera', 'NanoSpectCamera.py'))
 nanoSpectAICamera.pack(pady = 50)
 
 nanoSpectAIMobile = ttk.Button(window, 
                                text = 'Mobile',
                                width = 30,
-                               command = lambda:stop_timer_and_launch('Mobile', 'Mobile.py'))
+                               command = lambda:stop_timer_and_launch('Mobile', 'NanoSpectMobile.py'))
 nanoSpectAIMobile.pack()
 
 # run
