@@ -163,6 +163,7 @@ if st.button("Generate Inspection Report", width=700):
                 building_type=building_style,
                 building_name=address,
                 inspection_date=inspection_date.strftime("%m/%d/%Y"),
+                building_image_path= temp_photo_path,
                 inspectors=inspector_data,
                 logo_path=logo_path
             )

@@ -1,1 +1,0 @@
-print("Mobile Python")
