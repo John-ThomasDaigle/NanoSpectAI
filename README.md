@@ -25,12 +25,6 @@
     <li>Efficient API calls designed for <b>minimal</b> token consumption and reduced latency.</li>
 </ul>
 
-<style>
-.features li {
-    margin-bottom: 10px;
-}
-</style>
-
 <h2 id="installation">
     <img src="./Assets/Gear.png" width="30px" align="top"/>
     ⠀Installation
@@ -50,12 +44,6 @@ Follow the <a href="./Assets/Installation.md">installation guide</a> to set ever
     <li>USB Camera or Android Phone for captured images</li>
     <li>USB Mic connected to the Jetson</li>
 </ul>
-
-<style>
-.gettingStarted li {
-    margin-bottom: 10px;
-}
-</style>
 
 ### Multiple Systems
 
