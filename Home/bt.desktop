@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=bluetooth
+Exec=/home/student/bluetooth_trust.sh
+Terminal=false
+X_GNOME-Autostart-enabled=true

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Launcher
+Exec=gnome-terminal -- /usr/bin/python3 /home/student/audio-transcription-using-openai-whisper/NanoSpectAITkinter.py
+Terminal=true
+X_GNOME-Autostart-enabled=true
