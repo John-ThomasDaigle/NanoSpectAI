@@ -48,7 +48,7 @@ Follow the <a href="./Assets/Installation.md">installation guide</a> to set ever
 ### Multiple Systems
 
 > [!NOTE]
-> This project has multiple systems including the note taking script that uses whisper, the gemini api script, and a mobile app for sending images over bluetooth. These systems are in the github under the different folders check the <a href="#installation">Installation</a> guide for how to setup each system.
+> This project has multiple systems including the note taking script that uses whisper, the Gemini api script, and a mobile app for sending images over bluetooth. These systems are in the github under the different folders check the <a href="#installation">Installation</a> guide for how to setup each system.
 
 <h2 id="contributors">
     <img src="./Assets/Developer.png" width="30px" align="top"/>
