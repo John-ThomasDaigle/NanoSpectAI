@@ -59,9 +59,9 @@ Follow the <a href="./Assets/Installation.md">installation guide</a> to set ever
 - **[@JoshDumas45](https://github.com/JoshDumas45)**:
 - **[@Jackson2812](https://github.com/Jackson2812)**:
 
-<h2 id="credits">
+<h2 id="Supervisor">
     <img src="./Assets/Medal.png" width="30px" align="top"/>
-    ⠀Credits
+    ⠀Supervisor
 </h2>
 
-Thanks to [ZGMFX20AR](https://github.com/ZGMFX20AR) for their [Repository](https://github.com/ZGMFX20AR/audio-transcription-using-openai-whisper) for setting up Whisper AI.
+This private project is supervised by [Dr. Ahmad Al-Shami](https://github.com/alshami10), who has repository access solely for academic guidance, review, and assessment purposes.
