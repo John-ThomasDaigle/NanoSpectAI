@@ -115,7 +115,7 @@ Step 6: Boot the machine, or run either script after boot. Take pictures with An
 <!-- #################### Windows INSTALLATION #################### -->
 
 <h2 id="windows-installation">
-    <img src="Windows.png" width="25px" align="top"/>
+    <img src="windows.png" width="25px" align="top"/>
     ⠀Windows
 </h2>
 
