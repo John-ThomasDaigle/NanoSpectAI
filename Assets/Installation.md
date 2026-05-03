@@ -97,6 +97,9 @@ These scripts are launched through <a href="../NanoSpectAI/NanoSpectAITkinter.py
 ~/audio-transcription-using-openai-whisper/
 ```
 
+> [!NOTE]
+> If the you want the the application to run on login then you need to put the <a href="../NanoSpectAI/NanoSpectCamera.py">NanoSpectCamera.py</a> and <a href="../NanoSpectAI/NanoSpectMobile.py">NanoSpectMobile.py</a> scripts into the HOME directory(at least we had to).
+
 <br>
 
 Step 5: Download mobile app (NanoSpectAIMobile) on your Android device and connect the device to the Jetson via Bluetooth
