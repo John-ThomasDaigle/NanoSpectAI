@@ -105,7 +105,7 @@ These scripts are launched through <a href="../NanoSpectAI/NanoSpectAITkinter.py
 Step 5: Download mobile app (NanoSpectAIMobile) on your Android device and connect the device to the Jetson via Bluetooth
 
 ### Android Studio
-The mobile app was made using android studio to install the app on your android phone add using android studio and the folder called <a href="../NanoSpectMobile">NanoSpectMobile</a>
+The mobile app was made using Android Studio. To install this app, you need to download Android Studio on your computer and open this folder <a href="../NanoSpectMobile">NanoSpectMobile</a> in it. You also need to turn on Developer Mode in your Android settings with USB Debugging on.
 
 May add direct APK later
 
@@ -150,7 +150,7 @@ These launch the interface for the final report
 
 <ul class="step3b">
     <li><a href="../NanoSpectAPI-UI/launch.bat">launch.bat</a> Windows devices</li>
-    <li><a href="../NanoSpectAPI-UI/launch.sh">launch.sh</a> Linux device</li>
+    <li><a href="../NanoSpectAPI-UI/launch.sh">launch.sh</a> Linux devices</li>
 </ul>
 
 <br>
