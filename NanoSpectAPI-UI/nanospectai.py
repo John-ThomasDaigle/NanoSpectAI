@@ -446,10 +446,6 @@ def analyze_all_findings(
         text_lower = text.lower()
         return not any(phrase in text_lower for phrase in FORBIDDEN_PHRASES)
 
-    if not _check_content(item["description"]):
-        logger.warning("Finding %d description violated content rules — flagging.", i)
-        item["description"] += " [Review recommended]"
-
     VALID_SEVERITIES = {"Significant", "Marginal", "Minor"}
     raw_sev = (r.get("severity") or "Minor").strip().title()
     raw_sev = raw_sev.split()[0]  # handles "Significant Defect" → "Significant"
