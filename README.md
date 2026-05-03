@@ -15,7 +15,8 @@
     <a href="#key-features">Key Features</a> •
     <a href="#installation">Installation</a> •
     <a href="#getting-started">Getting Started</a> •
-    <a href="#credits">Credits</a>
+    <a href="#example-reports">Example Reports</a> •
+    <a href="#supervisor">Supervisor</a>
 </p>
 
 <h2 id="key-features">
@@ -56,6 +57,19 @@ Follow the <a href="./Assets/Installation.md">installation guide</a> to set ever
 > [!NOTE]
 > This project has multiple systems including the note taking script that uses Whisper, the Gemini API script, and a mobile app for sending images over bluetooth. These systems are in the GitHub under the different folders check the <a href="#installation">Installation</a> guide for how to setup each system.
 
+
+<h2 id="example-reports">
+    <img src="./Assets/Report.png" width="30px" align="top"/>
+    ⠀Example Reports
+</h2>
+
+This entire project was created for the Computer Science Senior Project during the 2025–2026 academic year. These example reports were created to test the applications and were conducted by students who are not experienced inspectors (specifically, the <a href="./ExampleReports/NanoSpectAI_Jetson_Report.docx">NanoSpectAI_Jetson_Report.docx</a> may not be very accurate in terms of inspection guidelines). The reports were conducted at SAU in the Talley Hall Dormitory.
+
+<ul class="example-reports">
+    <li><a href="./ExampleReports/NanoSpectAI_Jetson_Report.docx">NanoSpectAI_Jetson_Report.docx</a> Example Report retreived from the Jetson created with WhisperAI (images + notes DOCX).</li>
+    <li><a href="./ExampleReports/NanoSpectAI_Inspection_Report.pdf">NanoSpectAI_Inspection_Report.pdf</a>Example Report generated using Gemini 2.5 pro and the Streamlit user interface (Final Report PDF).</li>
+</ul>
+
 <h2 id="contributors">
     <img src="./Assets/Developer.png" width="30px" align="top"/>
     ⠀Contributors
@@ -65,7 +79,7 @@ Follow the <a href="./Assets/Installation.md">installation guide</a> to set ever
 - **[@JoshDumas45](https://github.com/JoshDumas45)**:
 - **[@Jackson2812](https://github.com/Jackson2812)**:
 
-<h2 id="Supervisor">
+<h2 id="supervisor">
     <img src="./Assets/Medal.png" width="30px" align="top"/>
     ⠀Supervisor
 </h2>
