@@ -62,7 +62,7 @@ These scripts must exist in your system (location can vary depending on your set
 </ul>
 
 ### Make Scripts Executable
-Before they can run, you must give them execution permissions:
+Before they can run, you must give both scripts execution permissions:
 ```bash
 chmod +x /home/student/move_bt_images.sh
 ```
