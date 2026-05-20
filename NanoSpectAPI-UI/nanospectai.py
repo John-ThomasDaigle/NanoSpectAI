@@ -789,6 +789,6 @@ def generate_inspection_report(
 
     # Write DOCX
     build_output_docx(pairs, docx_out)
-    logger.info("Final PDF : %s", final_pdf)
-    logger.info("DOCX      : %s", docx_out)
+    logger.info("Final PDF: %s", final_pdf)
+    logger.info("DOCX: %s", docx_out)
     return final_pdf
